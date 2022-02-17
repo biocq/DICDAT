@@ -8,6 +8,7 @@ Usage: DICDAT.R [options]
 
 
 Options:
+	
 	--folder=FOLDER
 		Project folder to be used for storing data used and output by this program.
 
