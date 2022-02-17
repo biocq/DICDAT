@@ -1,0 +1,353 @@
+---
+title: "Data preparation"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+##### Prepare necessary data.
+##### It may take a large amount of RAMs.
+
+```{r, setup, include=FALSE}
+knitr::opts_knit$set(root.dir = getwd())
+knitr::opts_chunk$set(eval = TRUE)
+options(stringsAsFactors = FALSE)
+```
+Install packages.
+```{r}
+# chooseBioCmirror() # choose a Bioconductor mirror
+
+installed_pkgs <- installed.packages()
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+if (length(setdiff("TCGAbiolinks", installed_pkgs)) > 0) {
+    BiocManager::install("TCGAbiolinks")
+}
+if (length(setdiff("biomaRt", installed_pkgs)) > 0) {
+    BiocManager::install("biomaRt")
+}
+if (length(setdiff("GenomicFeatures", installed_pkgs)) > 0) {
+    BiocManager::install("GenomicFeatures")
+}
+if (length(setdiff("depmap", installed_pkgs)) > 0) {
+  BiocManager::install("depmap", version ='3.14')
+}
+if (length(setdiff("RaggedExperiment", installed_pkgs)) > 0) {
+  BiocManager::install("RaggedExperiment")
+}
+if (length(setdiff("data.table", installed_pkgs)) > 0) {
+    install.packages(pkgs = setdiff("data.table", installed_pkgs))
+}
+
+```
+
+Load library.
+```{r}
+suppressMessages(library(depmap))
+suppressMessages(library(ExperimentHub))
+suppressMessages(library(data.table))
+suppressMessages(library(RaggedExperiment))
+suppressMessages(library(TCGAbiolinks))
+suppressMessages(library(stringr))
+```
+Create processed data folder.
+```{r}
+if (!file.exists("./data/")){ # for DepMap CCLE data
+  dir.create("./data/")
+}
+if (!file.exists("./ex_TCGA/")){ # for TCGA data
+  dir.create("./ex_TCGA/")
+}
+```
+
+```{r message=FALSE}
+eh <- ExperimentHub()
+```
+
+Download meta data.
+```{r message=FALSE}
+metadata <- eh[["EH6757"]]
+cell_line_mapping <- metadata[,c("depmap_id","cell_line")]
+```
+
+Download and process DepMap 21Q3 CRISPR screen data.
+```{r message=FALSE}
+dependency_dat <- eh[["EH6753"]]
+
+dependency_dat <- dependency_dat[,c(5,3,6)]
+colnames(dependency_dat) <- c("gene", "dependency", "cell_line")
+dependency_dat <- dependency_dat %>% filter(!grepl('MERGED', cell_line))
+dependency_dat$context <- sapply(dependency_dat$cell_line,function(z) paste(strsplit(z,split="_")[[1]][-1], collapse = "_"))
+write.table(dependency_dat,file = paste0("./data/dependency_processed.tsv"), sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+dependency_dat[1:5,]
+
+```
+Download and process DepMap 21Q3 CCLE mutation data.
+```{r message=FALSE}
+mutation_dat <- eh[["EH6756"]]
+
+mutation_dat <- within(mutation_dat, mut_pos <- paste(paste("chr", chromosome, ":", start_pos, sep = ""), end_pos, sep = '-'))
+mutations <- mutation_dat[,c("gene_name", "depmap_id", "mut_pos", "var_class", "is_deleterious")]
+
+mutation_dat <- NA
+mutations <- merge(mutations, cell_line_mapping, by = 'depmap_id', all.x = TRUE)
+mutations <- mutations %>% filter(!grepl('MERGED', cell_line))
+
+mutations$context <- sapply(mutations$cell_line,function(z) paste(strsplit(z, split="_")[[1]][-1], collapse = "_"))
+# We removed mutation types with few mutations (< 5,000)
+mutations$var_class[which(mutations$var_class %in% names(table(mutations_dt$var_class)[table(mutations_dt$var_class)<5000]))]<-""
+
+mutations$var_class <- mutations$var_class %>% str_replace_all("Frame_Shift_Del", "Frame_Shift_Indel")
+mutations$var_class <- mutations$var_class %>% str_replace_all("Frame_Shift_Ins", "Frame_Shift_Indel")
+mutations$var_class <- mutations$var_class %>% str_replace_all("In_Frame_Del", "In_Frame_Indel")
+mutations$var_class <- mutations$var_class %>% str_replace_all("In_Frame_Ins", "In_Frame_Indel")
+mutations$var_class <- mutations$var_class %>% str_replace_all("Missense_Mutation", "Missense")
+mutations$var_class <- mutations$var_class %>% str_replace_all("Nonsense_Mutation", "Nonsense")
+write.table(mutations, file = paste0("./data/mutation_processed.tsv"), sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+mutation_dat[1:5,]
+```
+Download and process DepMap 21Q3 CCLE CNV data.
+```{r message=FALSE}
+CNV_dat <- eh[["EH6754"]]
+
+CNV_dat <- CNV_dat[,c(5,3,6)]
+CNV_dat <- CNV_dat %>% filter(!grepl('MERGED', cell_line))
+write.table(CNV_dat,file = paste0("./data/CNV_processed.tsv"), sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+CNV_dat[1:5,]
+```
+Download and process DepMap 21Q3 CCLE expression data.
+```{r message=FALSE}
+exp_tpm_dat <- eh[["EH6755"]]
+
+exp_tpm_dat <- exp_tpm_dat[,c(5,3,6)]
+colnames(exp_tpm_dat) <- c("gene", "rna_expression", "cell_line")
+
+exp_tpm_dat <- exp_tpm_dat %>% filter(!grepl('MERGED', cell_line))
+exp_tpm_dat$context <- sapply(exp_tpm_dat$cell_line, function(z) paste(strsplit(z, split= "_")[[1]][-1], collapse = "_"))
+if(!file.exists(paste("./data/expr_processed.tsv",sep =""))){
+    write.table(exp_tpm_dat,file = paste0("./data/expr_processed.tsv"), sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+}
+exp_tpm_dat[1:5,]
+```
+
+Prepare TCGA data.
+```{r}
+eh <- ExperimentHub(localHub=FALSE)
+
+apData <- query(eh, "Eli and Edythe L. Broad Institute of Harvard and MIT")
+data_filtered=data.frame("ID" = apData$ah_id, "title" = apData$title, "desc" = apData$description, "rdataclass" = apData$rdataclass)
+#data_filtered_mut=data_filtered[data_filtered$rdataclass == "RaggedExperiment" & grepl('Mutation', data_filtered$title),]
+data_filtered1 <- data_filtered[grepl("RNASeq2GeneNorm", data_filtered$title),]
+data_filtered2 <- data_filtered[grepl("ThresholdedByGene", data_filtered$title), ]
+data_filtered2 <- data_filtered2[!grepl("ThresholdedByGene", data_filtered2$desc),]
+other_CNA <- data_filtered[data_filtered$ID %in% c("EH2543", "EH2540"),]
+data_filtered <- rbind(data_filtered1, data_filtered2, other_CNA)
+
+data_filtered$Tumor_type <- sapply(data_filtered$title,function(z) paste(strsplit(z, split = "_")[[1]][1]))
+data_filtered$Name <- sapply(data_filtered$title,function(z) paste(strsplit(z, split = "-")[[1]][1]))
+data_filtered <- data_filtered[data_filtered$rdataclass == "SummarizedExperiment",]
+data_filtered <-  data_filtered[!grepl("illuminahiseq", data_filtered$Name), ]
+data_filtered <-  data_filtered[!duplicated(data_filtered$Name),]
+
+ct <- count(data_filtered, "Tumor_type")
+remove_tumors <- ct$Tumor_type[which(ct$freq<2)]
+data_filtered <- data_filtered[!(data_filtered$Tumor_type %in% remove_tumors),]
+rm(data_filtered1)
+rm(data_filtered2)
+write.table(data_filtered,file = "./ex_TCGA/exp_cna_IDs.tsv", sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+```
+
+Write codes for downloading TCGA Expression and CNV data.
+```{r}
+if(!exists("data_filtered")){
+  if(file.exists("./ex_TCGA/exp_cna_IDs.tsv")){
+      data_filtered <- read.table("./ex_TCGA/exp_cna_IDs.tsv", header = TRUE, sep = '\t')
+  }else{
+      stop("File exp_cna_IDs.tsv is not found.")
+  }
+}
+exp_dt <- data_filtered[grepl('RNASeq2GeneNorm', data_filtered$Name), ]
+for(i in 1:nrow(exp_dt)){
+
+  cat(paste0(exp_dt$Name[i],"_tmp <- eh[[\"",exp_dt[i,"ID"],"\"]]\n"),file = stdout())
+  cat(paste0(exp_dt$Name[i]," <- assays(",exp_dt$Name[i],"_tmp)[[1]]\n"),file = stdout())
+  cat(paste0(exp_dt$Name[i]," <- rownames_to_column(as.data.frame(",exp_dt$Name[i],"), var = \"Gene\")\n"),file = stdout())
+  cat(paste0("write.table(",exp_dt$Name[i],",file = paste0(\"./ex_TCGA/",exp_dt$Name[i],".tsv\"), sep = \"\\t\",row.names = F,col.names=T,quote=FALSE)\n", sep = ""))
+  cat("rm(",exp_dt$Name[i],")\n", sep = "")
+  cat("rm(",exp_dt$Name[i],"_tmp)\n", sep = "")
+  
+  
+}
+
+CNA_dt <- data_filtered[grepl('GISTIC', data_filtered$Name), ]
+for(i in 1:nrow(CNA_dt)){
+  cat(paste0(CNA_dt$Name[i],"_tmp <- eh[[\"",CNA_dt[i,"ID"],"\"]]\n"),file = stdout())
+  cat(paste0(CNA_dt$Name[i]," <- assays(",CNA_dt$Name[i],"_tmp)[[1]]\n"),file = stdout())
+  cat(paste0(CNA_dt$Name[i]," <- rownames_to_column(as.data.frame(",CNA_dt$Name[i],"), var = \"Gene\")\n"),file = stdout())
+  cat(paste0("write.table(",CNA_dt$Name[i],",file = paste0(\"./ex_TCGA/",CNA_dt$Name[i],".tsv\"), sep = \"\\t\",row.names = FALSE, col.names = TRUE, quote = FALSE)\n", sep = ""))
+  cat("rm(",CNA_dt$Name[i],")\n", sep = "")
+  cat("rm(",CNA_dt$Name[i],"_tmp)\n", sep = "")
+}
+```
+
+Merge TCGA RNA-seq data.
+```{r}
+if(!file.exists("./ex_TCGA/exp_TCGA_combined.tsv")){
+	exp_dt <- data_filtered[grepl('RNASeq2GeneNorm', data_filtered$Name), ]
+	Tumor_types <- exp_dt$Tumor_type
+
+	exp <- fread(paste0("./ex_TCGA/", Tumor_types[1], "_RNASeq2GeneNorm.tsv"), sep = "\t", header = TRUE)
+	  
+	for(i in 2:length(Tumor_types)){
+	  
+	  exp1 <- fread(paste0("./ex_TCGA/", Tumor_types[i], "_RNASeq2GeneNorm.tsv"), sep = "\t", header = TRUE)
+	  exp <- merge(exp, exp1, by = "Gene", all = TRUE)
+	  
+	}
+	rm(exp1)
+	rm(exp)
+	exp_values <- round(log2(exp[,-1] + 1), digits = 4)
+	exp_combined <- data.frame(exp[,1], exp_values)
+	colnames(exp_combined) <- gsub("\\.", "-", colnames(exp_combined))
+	colname_exp <- c("Gene", sapply(colnames(exp_combined)[-1], function(z) paste(strsplit(z, split="-")[[1]][1:4], collapse = "-")))
+	names(colname_exp) <- NULL
+
+	colnames(exp_combined) <- colname_exp
+
+	write.table(exp_combined,file = paste0("./ex_TCGA/exp_TCGA_combined.tsv"), sep = "\t",row.names = FALSE, col.names = TRUE, quote = FALSE, append = FALSE)
+	rm(colname_exp)
+}
+
+# Convert wide to long format, requires a lot of memory. If you do not have enough memories, try split the exp_TCGA_combined.tsv first.
+
+if(!exists("exp_combined")){
+	exp_combined <- fread(paste0("./ex_TCGA/exp_TCGA_combined.tsv"), sep = "\t", header = TRUE)
+}
+long_dat <- melt(exp_combined, id.vars = "Gene")
+colnames(long_dat) <- c("gene", "cell_line", "rna_expression")
+write.table(long_dat[,c("gene", "rna_expression", "cell_line")], file = paste0("./ex_TCGA/TCGA_expr_processed.tsv"), sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE, append = FALSE)
+
+rm(exp_combined)
+rm(exp_values)
+rm(long_dat)
+```
+
+Merge TCGA CNA data.
+```{r}
+cna_dt <- data_filtered[grepl('GISTIC_ThresholdedByGene', data_filtered$Name), ]
+Tumor_types <- cna_dt$Tumor_type
+
+cna <- fread(paste0("./ex_TCGA/", Tumor_types[1], "_GISTIC_ThresholdedByGene.tsv"), sep = "\t", header = TRUE)
+
+for(i in 2:length(Tumor_types)){
+  cna1 <- fread(paste0("./ex_TCGA/", Tumor_types[i], "_GISTIC_ThresholdedByGene.tsv"), sep = "\t", header = TRUE)
+  cna <- merge(cna, cna1, by = "Gene", all = T)
+}
+rm(cna1)
+
+colname_cna <- c("Gene", sapply(colnames(cna)[-1],function(z) paste(strsplit(z,split="-")[[1]][1:4],collapse="-")))
+names(colname_cna) <- NULL
+
+colnames(cna) <- colname_cna
+long_dat <- melt(cna, id.vars = "Gene")
+colnames(long_dat) <- c("gene_name", "cell_line", "log_copy_number")
+
+write.table(long_dat[,c("gene_name", "log_copy_number", "cell_line")], file = paste0("./ex_TCGA/TCGA_CNV_processed.tsv"), sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE, append = FALSE)
+
+rm(cna)
+rm(cna1)
+rm(long_dat)
+rm(colname_cna)
+```
+
+
+Generate TCGA annotation file.
+```{r}
+TCGA_cancer_anno <- read.table(header=T, text='
+Lineage Cancer_type Tumor
+adrenal_cortex  "Adrenocortical Cancer"  ACC
+urinary_tract	"Bladder Cancer"	BLCA
+breast	"Breast Cancer"	BRCA
+cervix	"Cervical Cancer"	CESC
+bile_duct "Bile Duct Cancer" CHOL
+colorectal	"Colon/Colorectal Cancer"	COAD
+lymphocyte "Large B-cell Lymphoma"  DLBC
+esophagus	"Esophageal Cancer"	ESCA
+central_nervous_system	"Brain Cancer"	GBM
+upper_aerodigestive	"Head and Neck Cancer"	HNSC
+kidney  "Kidney Chromophobe" KICH
+kidney	"Kidney Cancer"	KIRC
+kidney	"Kidney Cancer"	KIRP
+blood  "Acute Myeloid Leukemia" LAML
+central_nervous_system	"Brain Cancer"	LGG
+liver	"Liver Cancer"	LIHC
+lung	"Lung Cancer"	LUAD
+lung	"Lung Cancer"	LUSC
+lung  Mesothelioma  MESO
+ovary	"Ovarian Cancer"	OV
+pancreas	"Pancreatic Cancer"	PAAD
+kidney "Pheochromocytoma & Paraganglioma"  PCPG
+prostate	"Prostate Cancer"	PRAD
+colorectal	"Colon/Colorectal Cancer"	READ
+soft_tissue	Sarcoma	SARC
+skin  "Skin Cancer" SKCM
+gastric	"Gastric Cancer"	STAD
+embryo	"Germ Cell Cancer"	TGCT
+thyroid	"Thyroid Cancer"	THCA
+thymus  Thymoma THYM
+uterus	"Endometrial/Uterine Cancer"	UCEC
+endometrium "Uterine Carcinosarcoma"  UCS
+skin  "Ocular melanomas"  UVM
+')
+
+all <- NULL
+for(i in 1:length(Tumor_types)){
+  con <- file(paste("./ex_TCGA/", Tumor_types[i], "_RNASeq2GeneNorm.tsv", sep = ""))
+  st <- scan(con, what = "", nlines = 1, sep= "\t", quote = "")
+  st1 <- data.frame("ID" = gsub("\\.", "-", st), "Tumor" = Tumor_types[i])
+  all <- rbind(all, st1)
+}
+all <- all[which(all$ID != "Gene"),]
+all <- merge(all, TCGA_cancer_anno, by = "Tumor", all.x = TRUE)
+all <- all[,c("ID", "Tumor", "Lineage", "Cancer_type")]
+write.table(all, file = paste0("./ex_TCGA/sample_annotation.tsv", sep = ""), sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+```
+
+
+Process TCGA mutation data. Muse_masked_somatic_mutations.tar.gz was downloaded from TCGA website, it contains pan-cancer processed mutation data from 33 tumor types.
+```{r}
+if (!file.exists("./ex_TCGA/mutations/")){
+  dir.create("./ex_TCGA/mutations/")
+}
+untar("./ex_TCGA/Muse_masked_somatic_mutations.tar.gz", exdir = "./ex_TCGA/mutations/")
+mutation_file_paths <- paste("./ex_TCGA/mutations/", list.files("./ex_TCGA/mutations/", pattern="maf", recursive = TRUE, include.dirs = TRUE), sep = "")
+
+mutations_TCGA_dt_combined <- NULL
+for(i in 1:length(mutation_file_paths)){
+  cancer_type <- strsplit(mutation_file_paths[i], ".", fixed = TRUE)[[1]][3]
+  mutations_TCGA_dt <- fread(mutation_file_paths[i], header = TRUE, sep = '\t')
+  mutations_TCGA_dt <- within(mutations_TCGA_dt, mut_pos <- paste(paste(Chromosome,":",Start_Position, sep = ""),End_Position,sep = '-'))
+  mutations_TCGA_dt <- within(mutations_TCGA_dt, genome_change <- paste(paste(Chromosome,":", Start_Position, Reference_Allele,">",Tumor_Seq_Allele2, sep = ""),End_Position,sep = '-'))
+  mutations_TCGA_dt$Variant_Classification <- mutations_TCGA_dt$Variant_Classification %>% str_replace_all("Nonsense_Mutation", "Nonsense") %>% str_replace_all("Missense_Mutation", "Missense") %>% str_replace_all("Splice_Region", "Splice_Site")
+
+  mutations_TCGA_dt_tmp <- mutations_TCGA_dt[,c("mut_pos", "Variant_Classification","Hugo_Symbol","Entrez_Gene_Id","HGVSp_Short", "genome_change","Transcript_ID", "SIFT", "Tumor_Sample_Barcode")]
+  
+  mutations_TCGA_dt_tmp <- cbind(mutations_TCGA_dt_tmp, "context" = cancer_type)
+  
+  colnames(mutations_TCGA_dt_tmp) <- c("mut_pos", "var_class", "gene_name", "entrez_id", "protein_change", "genome_change", "annotation_trans", "is_deleterious", "cell_line", "context")
+  mutations_TCGA_dt_combined <- rbind(mutations_TCGA_dt_combined, mutations_TCGA_dt_tmp)
+}
+
+
+mutations_TCGA_dt_combined <- mutations_TCGA_dt_combined[which(mutations_TCGA_dt_combined$var_class %in% names(table(mutations_TCGA_dt_combined$var_class)[table(mutations_TCGA_dt_combined$var_class) > 50000])),]
+unique(mutations_TCGA_dt_combined$var_class)
+
+mutations_TCGA_dt_combined$cell_line <- sapply(mutations_TCGA_dt_combined$cell_line,function(z) paste(strsplit(z, split = "-")[[1]][1:4], collapse = "-"))
+
+write.table(mutations_TCGA_dt_combined, file = paste0("./ex_TCGA/TCGA_mutation_annotation.tsv"), sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+write.table(mutations_TCGA_dt_combined[,c("gene_name", "var_class", "cell_line")], file = paste0("./ex_TCGA/TCGA_mutation_processed.tsv"), sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+unlink("./ex_TCGA/mutations/", recursive = TRUE)
+unlink("./ex_TCGA/Muse_masked_somatic_mutations.tar")
+
+```
