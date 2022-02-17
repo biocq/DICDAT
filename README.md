@@ -131,7 +131,8 @@ Options:
 
 Examples:
 
-Download and unzip necessary data from https://figshare.com/projects/DICDAT_A_Data-driven_Method_Uncovers_Infrequent_Cancer-driving_Alterations_and_Associated_Targets_from_Multi-sample_Omics_Data/131000 and put into the right folder.
+Download and unzip necessary data from https://figshare.com/projects/DICDAT_A_Data-driven_Method_Uncovers_Infrequent_Cancer-driving_Alterations_and_Associated_Targets_from_Multi-sample_Omics_Data/131000 and put into the right folder. 
+You can also run data_prepare.Rmd if you are interested in processing raw data by yourself, however, it may require a lot of RAMs.
 
 
 1. Run DepMap CCLE data (Line 1 to 20)
